@@ -20,6 +20,7 @@ config.set_main_option("DATABASE_URL", database_url)
 
 from app.db.base import Base  # noqa: E402
 from app.models.company import Company  # noqa: E402, F401
+from app.models.user import User  # noqa: E402, F401
 
 target_metadata = Base.metadata
 
