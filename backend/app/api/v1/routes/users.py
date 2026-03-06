@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.auth import ensure_company_access, get_access_token_payload
 from app.core.security import get_password_hash
 from app.db.deps import get_db
 from app.models.company import Company
@@ -47,12 +48,30 @@ def list_users(
     skip: int = 0,
     limit: int = 100,
     company_id: int | None = None,
+    token_payload: dict = Depends(get_access_token_payload),
     db: Session = Depends(get_db),
 ) -> list[UserResponse]:
-    stmt = select(User).order_by(User.id).offset(skip).limit(limit)
+    is_superuser = token_payload.get("is_superuser", False)
+    token_company_id = token_payload.get("company_id")
 
-    if company_id is not None:
-        stmt = stmt.where(User.company_id == company_id)
+    stmt = select(User).order_by(User.id)
+
+    if is_superuser:
+        if company_id is not None:
+            stmt = stmt.where(User.company_id == company_id)
+    else:
+        if token_company_id is None:
+            raise HTTPException(status_code=401, detail="Token içinde company bilgisi yok.")
+
+        if company_id is not None and int(company_id) != int(token_company_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Bu company verisine erişim yetkiniz yok.",
+            )
+
+        stmt = stmt.where(User.company_id == int(token_company_id))
+
+    stmt = stmt.offset(skip).limit(limit)
 
     users = db.scalars(stmt).all()
 
@@ -72,6 +91,7 @@ def list_users(
 @router.get("/users/{user_id}", tags=["Users"], response_model=UserResponse)
 def get_user(
     user_id: int,
+    token_payload: dict = Depends(get_access_token_payload),
     db: Session = Depends(get_db),
 ) -> UserResponse:
     user = db.scalar(
@@ -79,6 +99,8 @@ def get_user(
     )
     if not user:
         raise HTTPException(status_code=404, detail="User bulunamadı.")
+
+    ensure_company_access(user.company_id, token_payload)
 
     return UserResponse(
         id=user.id,
@@ -98,24 +120,29 @@ def get_user(
 )
 def create_user(
     payload: UserCreateRequest,
+    token_payload: dict = Depends(get_access_token_payload),
     db: Session = Depends(get_db),
 ) -> UserResponse:
+    ensure_company_access(payload.company_id, token_payload)
+
     company = db.scalar(
         select(Company).where(Company.id == payload.company_id)
     )
     if not company:
         raise HTTPException(status_code=404, detail="Company bulunamadı.")
 
+    normalized_email = payload.email.strip().lower()
+
     existing_user = db.scalar(
-        select(User).where(User.email == payload.email)
+        select(User).where(func.lower(User.email) == normalized_email)
     )
     if existing_user:
         raise HTTPException(status_code=400, detail="Bu email zaten kullanılıyor.")
 
     user = User(
         company_id=payload.company_id,
-        full_name=payload.full_name,
-        email=payload.email,
+        full_name=payload.full_name.strip(),
+        email=normalized_email,
         password_hash=get_password_hash(payload.password),
         is_active=payload.is_active,
         is_superuser=payload.is_superuser,
@@ -139,6 +166,7 @@ def create_user(
 def update_user(
     user_id: int,
     payload: UserUpdateRequest,
+    token_payload: dict = Depends(get_access_token_payload),
     db: Session = Depends(get_db),
 ) -> UserResponse:
     user = db.scalar(
@@ -147,21 +175,26 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User bulunamadı.")
 
+    ensure_company_access(user.company_id, token_payload)
+    ensure_company_access(payload.company_id, token_payload)
+
     company = db.scalar(
         select(Company).where(Company.id == payload.company_id)
     )
     if not company:
         raise HTTPException(status_code=404, detail="Company bulunamadı.")
 
+    normalized_email = payload.email.strip().lower()
+
     existing_user = db.scalar(
-        select(User).where(User.email == payload.email, User.id != user_id)
+        select(User).where(func.lower(User.email) == normalized_email, User.id != user_id)
     )
     if existing_user:
         raise HTTPException(status_code=400, detail="Bu email zaten kullanılıyor.")
 
     user.company_id = payload.company_id
-    user.full_name = payload.full_name
-    user.email = payload.email
+    user.full_name = payload.full_name.strip()
+    user.email = normalized_email
     user.is_active = payload.is_active
     user.is_superuser = payload.is_superuser
 
@@ -184,6 +217,7 @@ def update_user(
 @router.delete("/users/{user_id}", tags=["Users"], response_model=MessageResponse)
 def delete_user(
     user_id: int,
+    token_payload: dict = Depends(get_access_token_payload),
     db: Session = Depends(get_db),
 ) -> MessageResponse:
     user = db.scalar(
@@ -191,6 +225,8 @@ def delete_user(
     )
     if not user:
         raise HTTPException(status_code=404, detail="User bulunamadı.")
+
+    ensure_company_access(user.company_id, token_payload)
 
     db.delete(user)
     db.commit()
