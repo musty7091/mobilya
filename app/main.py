@@ -17,8 +17,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Tüm rotalarımız (müşteriler, teklifler, auth) artık api_router içinde olduğu için tek satır yeterli:
 app.include_router(api_router, prefix="/api/v1")
-
 
 @app.get("/", tags=["Root"])
 def root() -> dict:
