@@ -148,3 +148,30 @@ def create_customer(
         notes=customer.notes,
         is_active=customer.is_active,
     )
+
+@router.put("/customers/{customer_id}", tags=["Customers"], response_model=CustomerResponse)
+def update_customer(
+    customer_id: int,
+    payload: CustomerCreateRequest, # Aynı Pydantic modelini kullanabiliriz
+    token_payload: dict = Depends(get_access_token_payload),
+    db: Session = Depends(get_db),
+) -> CustomerResponse:
+    # 1. Müşteriyi bul
+    customer = db.scalar(select(Customer).where(Customer.id == customer_id))
+    if not customer:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    # 2. Yetki kontrolü (kendi şirketine mi ait?)
+    ensure_company_access(customer.company_id, token_payload)
+
+    # 3. Bilgileri güncelle
+    customer.full_name = payload.full_name.strip()
+    customer.phone = payload.phone.strip() if payload.phone else None
+    customer.email = payload.email.strip().lower() if payload.email else None
+    customer.address = payload.address.strip() if payload.address else None
+    customer.notes = payload.notes.strip() if payload.notes else None
+    customer.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(customer)
+    return customer
